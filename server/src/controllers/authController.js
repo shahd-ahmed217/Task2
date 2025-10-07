@@ -3,6 +3,10 @@ import bcrypt from 'bcryptjs';
 import Joi from 'joi';
 import { User } from '../models/User.js';
 
+// A dummy hash used to make bcrypt.compare run even when the user is not found.
+// This helps avoid timing attacks that reveal whether an email exists.
+const DUMMY_HASH = bcrypt.hashSync('not_a_real_password_used_as_dummy', 10);
+
 const registerSchema = Joi.object({
   name: Joi.string().min(2).max(60).required(),
   email: Joi.string().email().required(),
@@ -31,7 +35,29 @@ const loginSchema = Joi.object({
 
 // TODO: implement login function
 export async function login(req, res, next) {
- 
+  try {
+    const { value, error } = loginSchema.validate(req.body);
+    if (error) return res.status(400).json({ message: error.message });
+
+    // Normalize and perform a case-insensitive lookup without changing stored data
+    const email = (value.email || '').trim();
+    const user = await User.findOne({ email: { $regex: `^${escapeRegExp(email)}$`, $options: 'i' } });
+
+    // Use a dummy hash when user is not found to make bcrypt.compare take similar time
+    const hashToCompare = user ? user.passwordHash : DUMMY_HASH;
+    const match = await bcrypt.compare(value.password, hashToCompare);
+
+    // If either no user or password mismatch, return the same generic error
+    if (!user || !match) return res.status(401).json({ message: 'Invalid credentials' });
+
+    const token = signToken(user);
+    res.json({ token, user: publicUser(user) });
+  } catch (err) { next(err); }
+
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export async function me(req, res) {
